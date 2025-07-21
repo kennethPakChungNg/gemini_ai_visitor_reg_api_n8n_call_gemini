@@ -328,7 +328,7 @@ class GeminiService:
                 return category.Id
         
         # Default fallback
-        return 20  # Default to delivery
+        return None  # Default to delivery
 
     def _get_validation_suggestions(self, extracted_value: str, item_list: list, item_type: str, parent_constraint: Optional[int] = None) -> list:
         """Get suggestions for invalid apartment components."""
@@ -361,19 +361,21 @@ class GeminiService:
     def _convert_subcategory_to_namechi(self, subcategory: Optional[str], visit_subcategories: list) -> Optional[str]:
         """Convert subcategory to NameChi string."""
         if not subcategory:
-            return None
+            return ""
             
         # Convert to string if it's not already
         subcategory = str(subcategory)
             
         # Common mappings for delivery services
         subcategory_mappings = {
-            "foodpanda": "FoodPanda",
-            "熊猫": "FoodPanda", 
-            "panda": "FoodPanda",
-            "keeta": "Keeta",
-            "美團": "Keeta",
-            "meituan": "Keeta"
+            "foodpanda": "熊貓",
+            "熊猫": "熊貓",
+            "熊貓": "熊貓",
+            "panda": "熊貓",
+            "keeta": "美團",
+            "美團": "美團",
+            "meituan": "美團",
+            "美团": "美團"
         }
         
         # Check direct mapping first
@@ -392,7 +394,7 @@ class GeminiService:
         
         # Return None if no valid mapping found (don't make up subcategories!)
         logger.warning(f"Invalid subcategory '{subcategory}' not found in valid list, returning None")
-        return None
+        return ""
 
     def _create_visitor_prompt(self, text: str, building_data: BuildingData) -> str:
         """Create a detailed prompt for visitor information extraction with building context."""
@@ -448,123 +450,8 @@ class GeminiService:
                 categories_text.append(f"  For main_category {subcat.VisitCatId}: '{subcat.NameChi}' or '{subcat.NameEng}'")
             categories_text.append("IMPORTANT: sub_category must be EXACTLY one of the NameChi values above, or null if none match")
 
-        prompt = f"""
-You are an AI assistant helping to parse visitor registration information from voice-to-text input.
-
-BUILDING INFORMATION:
-{building_context}
-
-COMPLETE BUILDING DATA FOR THIS BUILDING:
-{chr(10).join(building_mappings)}
-
-HOW TO USE THE BUILDING DATA:
-1. Find the EXACT block name in the COMPLETE BLOCK MAPPING section
-2. Find the EXACT floor name in the COMPLETE FLOOR MAPPING section for that block
-3. Find the EXACT unit name in the COMPLETE UNIT MAPPING section for that floor
-
-VISIT CATEGORIES:
-{chr(10).join(categories_text)}
-
-TASK: Parse the following visitor text and extract structured information:
-
-INPUT TEXT: "{text}"
-
-INSTRUCTIONS - EXTRACT EXACTLY WHAT YOU SEE IN THE TEXT:
-1. STEP 1 - Extract BLOCK: Find exact pattern like "1座", "2座", "5座" in the text
-2. STEP 2 - Extract FLOOR: Find exact pattern like "8樓", "11樓", "12樓", "15樓" in the text
-3. STEP 3 - Extract UNIT: Find exact pattern like "A室", "B室", "C室", "D室" in the text
-4. Extract visitor name (Chinese/English)
-5. Extract first 4 characters/digits of ID card
-6. Classify visit purpose into main category and sub-category
-
-CRITICAL: You MUST extract the EXACT characters from the input text, not interpret or convert them!
-
-CRITICAL ID MAPPING RULES (FOLLOW EXACTLY):
-STEP 1: Extract "1座" from text → Find block where NameChi="1座" → block_id = that block's Id number (NOT the floor Id!)
-STEP 2: Extract "11樓" from text → Find floor where NameChi="11樓" AND BlockId=block_id from step 1 → floor_id = that floor's Id number  
-STEP 3: Extract "D室" from text → Find unit where NameChi="D室" AND FloorId=floor_id from step 2 → flat_id = that unit's Id number
-
-⚠️  HIERARCHICAL VALIDATION RULES (CRITICAL):
-- Floor MUST belong to the specified block (check BlockId matches)
-- Unit MUST belong to the specified floor (check FloorId matches)  
-- If "5座管理處" but 管理處 is in block 19, return block_id=4, floor_id=null, flat_id=null
-- NEVER mix IDs from different blocks/floors - maintain parent-child relationships!
-
-WARNING: DO NOT CONFUSE BLOCK_ID WITH FLOOR_ID!
-- block_id is for "1座", "2座", "3座" etc. 
-- floor_id is for "8樓", "10樓", "11樓" etc.
-- flat_id is for "A室", "B室", "D室" etc.
-
-EXAMPLE 1 - "去1座11樓D室":
-STEP 1: Extract "1座" → Find block with NameChi="1座" → block_id = 1 
-STEP 2: Extract "11樓" → Find floor with NameChi="11樓" AND BlockId=1 → floor_id = 4 
-STEP 3: Extract "D室" → Find unit with NameChi="D室" AND FloorId=4 → flat_id = 16 
-RESULT: block_id=1, floor_id=4, flat_id=16
-
-EXAMPLE 2 - "去1座10樓D室":
-STEP 1: Extract "1座" → Find block with NameChi="1座" → block_id = 1 
-STEP 2: Extract "10樓" → Find floor with NameChi="10樓" AND BlockId=1 → floor_id = 3 
-STEP 3: Extract "D室" → Find unit with NameChi="D室" AND FloorId=3 → flat_id = 12 
-RESULT: block_id=1, floor_id=3, flat_id=12
-
-EXAMPLE 3 - "去5座12樓C室":
-STEP 1: Extract "5座" → Find block with NameChi="5座" → block_id = 4 
-STEP 2: Extract "12樓" → Find floor with NameChi="12樓" AND BlockId=4 → floor_id = 40 
-STEP 3: Extract "C室" → Find unit with NameChi="C室" AND FloorId=40 → flat_id = 156 
-RESULT: block_id=4, floor_id=40, flat_id=156
-
-EXAMPLE 4 - "去5座管理處" (HIERARCHICAL CONFLICT):
-STEP 1: Extract "5座" → Find block with NameChi="5座" → block_id = 4
-STEP 2: Extract "管理處" → Find floor with NameChi="管理處" → Found Id=190 BUT BlockId=19 (not 4!)
-STEP 3: HIERARCHICAL VIOLATION: 管理處 exists in block 19, not block 4
-RESULT: block_id=4, floor_id=null, flat_id=null (don't mix data from different blocks!)
-
-TEXT EXTRACTION RULES:
-- If text contains "5座", extract exactly "5座" (not 5, not "座5")
-- If text contains "12樓", extract exactly "12樓" (not 12, not "樓12")  
-- If text contains "C室", extract exactly "C室" (not C, not "室C")
-
-RESPONSE FORMAT - YOU MUST RETURN VALID JSON ONLY:
-
-CRITICAL EXTRACTION PROCESS (FOLLOW EXACTLY):
-1. Read the input text carefully
-2. Find EXACT Chinese characters for block (e.g., "5座", "6座")  
-3. Find EXACT Chinese characters for floor (e.g., "12樓", "10樓")
-4. Find EXACT Chinese characters for unit (e.g., "A室", "C室")
-5. Use the COMPLETE BUILDING DATA above to map each extracted string to its database ID
-6. For sub_category: ONLY use NameChi values from VALID SUBCATEGORIES above, or null
-
-STEP-BY-STEP MAPPING PROCESS:
-- Extract "6座" from text → Look in COMPLETE BLOCK MAPPING → "6座" → 5
-- Extract "12樓" from text → Look in COMPLETE FLOOR MAPPING for Block 5 → "12樓" → 51  
-- Extract "A室" from text → Look in COMPLETE UNIT MAPPING for Floor 51 → "A室" → 197
-
-SUBCATEGORY RULES:
-- If text mentions delivery services, use "FoodPanda" or "Keeta" ONLY
-- If text says "送外賣" but no specific service, use null (don't make up subcategories)
-- sub_category must be EXACTLY: "FoodPanda", "Keeta", or null
-
-Example output for "去6座12樓A室探朋友":
-{{
-    "visitor_name": "李先生",
-    "block_id": 5,
-    "floor_id": 51,
-    "flat_id": 197,
-    "id_card_prefix": "7542",
-    "main_category": 19,
-    "sub_category": "探朋友",
-    "confidence": 0.95
-}}
-
-CRITICAL REQUIREMENTS:
-- Return ONLY the JSON object, no other text before or after
-- Use actual database IDs from the building information above
-- All field names must be exactly as shown in the example
-- Numbers should be integers (not strings) for IDs
-- confidence should be a decimal between 0 and 1
-
-Your response:
-"""
+        prompt = f"""{text}"""
+        
         return prompt
 
     async def extract_visitor_info(self, text: str, building_data: BuildingData) -> Tuple[Optional[RawExtracted], float]:
@@ -716,10 +603,17 @@ Your response:
                     logger.info(f"Successfully validated apartment: {selected_unit.NameChi} (Id: {selected_unit.Id}, FloorId: {selected_unit.FloorId})")
             
             # Convert category name to ID
-            main_category_id = self._convert_category_name_to_id(parsed_data['main_category'], building_data.VisitCat)
+            raw_main = parsed_data.get('main_category')
+            if isinstance(raw_main, int):
+                main_category_id = raw_main  # Trust n8n's integer
+            else:
+                main_category_id = self._convert_category_name_to_id(raw_main, building_data.VisitCat)
             
-            # Validate and convert sub-category to NameChi string
-            sub_category_str = self._convert_subcategory_to_namechi(parsed_data.get('sub_category'), building_data.VisitSubCat) if parsed_data.get('sub_category') else None
+            # Validate and convert sub-category to NameChi string, if not found, return ""
+            sub_category_str = self._convert_subcategory_to_namechi(
+                parsed_data.get('sub_category'),
+                building_data.VisitSubCat
+            )
             
             # Create RawExtracted object
             raw_extracted = RawExtracted(
